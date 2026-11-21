@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<html lang="ht">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Robot Siyal</title>
+<style>
+  :root { --bg:#0f1115; --card:#1a1d24; --txt:#e8eaed; --mut:#8b92a0; --up:#22c55e; --dn:#ef4444; --acc:#3b82f6; }
+  * { box-sizing:border-box; }
+  body { margin:0; padding:env(safe-area-inset-top,0) 14px env(safe-area-inset-bottom,0); background:var(--bg); color:var(--txt);
+         font-family:-apple-system,system-ui,Segoe UI,Roboto,sans-serif; }
+  h1 { font-size:18px; margin:14px 0 4px; }
+  .sub { color:var(--mut); font-size:12px; margin-bottom:12px; }
+  .chips { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:12px; }
+  .chip { padding:8px 12px; border-radius:20px; background:var(--card); border:1px solid #2a2e38; font-size:14px; color:var(--mut); }
+  .chip.on { background:var(--acc); color:#fff; border-color:var(--acc); }
+  button.main { width:100%; padding:14px; font-size:16px; font-weight:600; border:0; border-radius:12px; background:var(--acc); color:#fff; }
+  button.main.stop { background:#374151; }
+  .status { display:flex; align-items:center; gap:8px; margin:12px 0; font-size:13px; color:var(--mut); }
+  .dot { width:10px; height:10px; border-radius:50%; background:#6b7280; }
+  .dot.ok { background:var(--up); }
+  .pairs { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-bottom:14px; }
+  .pair { background:var(--card); border-radius:10px; padding:10px; font-size:13px; }
+  .pair b { display:block; font-size:14px; margin-bottom:2px; }
+  .up { color:var(--up); } .dn { color:var(--dn); }
+  h2 { font-size:14px; color:var(--mut); margin:16px 0 8px; font-weight:600; }
+  .sig { background:var(--card); border-radius:12px; padding:12px 14px; margin-bottom:8px; display:flex; justify-content:space-between; align-items:center; border-left:5px solid; }
+  .sig.CALL { border-color:var(--up); } .sig.PUT { border-color:var(--dn); }
+  .sig .big { font-size:18px; font-weight:700; }
+  .sig .meta { font-size:12px; color:var(--mut); text-align:right; }
+  .res button { background:#2a2e38; border:0; color:var(--txt); border-radius:8px; padding:6px 10px; margin:6px 6px 0 0; font-size:13px; }
+  .score { font-size:13px; color:var(--mut); margin-bottom:8px; }
+  .warn { font-size:11px; color:var(--mut); margin:18px 0 24px; line-height:1.5; }
+  .flash { animation:flash 1s ease-out; }
+  @keyframes flash { from { background:#334155; } to { background:var(--card); } }
+</style>
+</head>
+<body>
+<h1>📡 Robot Siyal — Supertrend + MACD</h1>
+<div class="sub">Bouji 1 minit · done Deriv · pa konekte ak Pocket Option</div>
+
+<div class="chips" id="chips"></div>
+<button class="main" id="go">▶ Kòmanse</button>
+
+<div class="status"><span class="dot" id="dot"></span><span id="stat">Pa konekte</span></div>
+<div class="pairs" id="pairs"></div>
+
+<h2>SIYAL YO</h2>
+<div class="score" id="score">Viktwa: 0 · Defèt: 0</div>
+<div id="log"><div class="sub">Pa gen siyal ankò. Kite paj la ouvè epi ekran an limen.</div></div>
+
+<div class="warn">
+  Siyal yo pa garanti. Pri Deriv ka diferan yon ti kras de Pocket Option. Antre sou ekspirasyon 1 minit, teste sou demo anvan, epi pa riske plis pase sa w ka pèdi.
+</div>
+
+<script>
+const ST_PERIOD = 10, ST_MULT = 3.0, MF = 12, MS = 26, MSIG = 9;
+
+function ema(values, span) {
+  const a = 2 / (span + 1), out = [values[0]];
+  for (let i = 1; i < values.length; i++) out.push(a * values[i] + (1 - a) * out[i - 1]);
+  return out;
+}
+
+function supertrend(c) {
+  const n = c.length, alpha = 1 / ST_PERIOD;
+  const tr = c.map((x, i) => i === 0 ? x.high - x.low :
+    Math.max(x.high - x.low, Math.abs(x.high - c[i-1].close), Math.abs(x.low - c[i-1].close)));
+  const atr = [tr[0]];
+  for (let i = 1; i < n; i++) atr.push(alpha * tr[i] + (1 - alpha) * atr[i-1]);
+  const ub = c.map((x, i) => (x.high + x.low) / 2 + ST_MULT * atr[i]);
+  const lb = c.map((x, i) => (x.high + x.low) / 2 - ST_MULT * atr[i]);
+  const upper = ub.slice(), lower = lb.slice(), dir = new Array(n).fill(1);
+  for (let i = 1; i < n; i++) {
+    upper[i] = (ub[i] < upper[i-1] || c[i-1].close > upper[i-1]) ? ub[i] : upper[i-1];
+    lower[i] = (lb[i] > lower[i-1] || c[i-1].close < lower[i-1]) ? lb[i] : lower[i-1];
+    if (dir[i-1] === 1) dir[i] = c[i].close < lower[i] ? -1 : 1;
+    else dir[i] = c[i].close > upper[i] ? 1 : -1;
+  }
+  return dir;
+}
+
+function analyze(c) {
+  if (c.length < MS + MSIG + 5) return null;
+  const closes = c.map(x => x.close);
+  const ef = ema(closes, MF), es = ema(closes, MS);
+  const line = ef.map((v, i) => v - es[i]);
+  const sig = ema(line, MSIG);
+  const dir = supertrend(c);
+  const n = c.length - 1, p = n - 1;
+  const hist = line[n] - sig[n];
+  const crossUp = line[p] <= sig[p] && line[n] > sig[n];
+  const crossDn = line[p] >= sig[p] && line[n] < sig[n];
+  const flipUp = dir[p] === -1 && dir[n] === 1;
+  const flipDn = dir[p] === 1 && dir[n] === -1;
+  let signal = null;
+  if ((crossUp && dir[n] === 1) || (flipUp && hist > 0)) signal = 'CALL';
+  else if ((crossDn && dir[n] === -1) || (flipDn && hist < 0)) signal = 'PUT';
+  return { signal, trend: dir[n], price: closes[n] };
+}
+
+const PAIRS = { 'EUR/USD':'frxEURUSD', 'GBP/USD':'frxGBPUSD', 'USD/JPY':'frxUSDJPY', 'EUR/JPY':'frxEURJPY',
+                'AUD/USD':'frxAUDUSD', 'USD/CAD':'frxUSDCAD', 'XAU/USD':'frxXAUUSD' };
+const selected = new Set(['frxEURUSD']);
+const feeds = {};
+let ws = null, running = false, wakeLock = null, audioCtx = null, wins = 0, losses = 0, retry = null;
+
+const $ = id => document.getElementById(id);
+const nameOf = sym => Object.keys(PAIRS).find(k => PAIRS[k] === sym) || sym;
+
+function drawChips() {
+  $('chips').innerHTML = '';
+  for (const [label, sym] of Object.entries(PAIRS)) {
+    const d = document.createElement('div');
+    d.className = 'chip' + (selected.has(sym) ? ' on' : '');
+    d.textContent = label;
+    d.onclick = () => {
+      if (running) return;
+      selected.has(sym) ? selected.delete(sym) : selected.add(sym);
+      if (selected.size === 0) selected.add(sym);
+      drawChips();
+    };
+    $('chips').appendChild(d);
+  }
+}
+drawChips();
+
+function setStatus(ok, text) { $('dot').className = 'dot' + (ok ? ' ok' : ''); $('stat').textContent = text; }
+
+function drawPairs() {
+  $('pairs').innerHTML = '';
+  for (const sym of selected) {
+    const f = feeds[sym]; if (!f) continue;
+    const t = f.trend === undefined ? '…' : (f.trend === 1 ? '<span class="up">▲ monte</span>' : '<span class="dn">▼ desann</span>');
+    const d = document.createElement('div');
+    d.className = 'pair';
+    d.innerHTML = `<b>${nameOf(sym)}</b>${f.price !== undefined ? f.price : '…'} · ${t}`;
+    $('pairs').appendChild(d);
+  }
+}
+
+function beep(kind) {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+    o.frequency.value = kind === 'CALL' ? 880 : 440;
+    g.gain.value = 0.25;
+    o.connect(g); g.connect(audioCtx.destination);
+    o.start(); o.stop(audioCtx.currentTime + 0.35);
+  } catch (e) {}
+  if (navigator.vibrate) navigator.vibrate([300, 100, 300]);
+}
+
+function addSignal(sym, kind, price) {
+  const log = $('log');
+  if (log.firstElementChild && log.firstElementChild.classList.contains('sub')) log.innerHTML = '';
+  const t = new Date().toLocaleTimeString();
+  const el = document.createElement('div');
+  el.className = 'sig-wrap flash';
+  el.innerHTML = `<div class="sig ${kind}">
+      <div><div class="big ${kind === 'CALL' ? 'up' : 'dn'}">${kind === 'CALL' ? '🟢 CALL ▲' : '🔴 PUT ▼'}</div>
+      <div>${nameOf(sym)}</div></div>
+      <div class="meta">${t}<br>pri ${price}<br>ekspirasyon 1 min</div></div>
+      <div class="res"><button data-r="w">✅ Genyen</button><button data-r="l">❌ Pèdi</button></div>`;
+  el.querySelectorAll('button').forEach(b => b.onclick = () => {
+    if (b.parentElement.dataset.done) return;
+    b.parentElement.dataset.done = 1;
+    b.dataset.r === 'w' ? wins++ : losses++;
+    b.parentElement.innerHTML = b.dataset.r === 'w' ? '✅ Genyen' : '❌ Pèdi';
+    $('score').textContent = `Viktwa: ${wins} · Defèt: ${losses}` + (wins + losses ? ` · ${Math.round(100 * wins / (wins + losses))}%` : '');
+  });
+  log.prepend(el);
+  beep(kind);
+}
+
+function closedCandles(f) {
+  const keys = [...f.candles.keys()].sort((a, b) => a - b).filter(k => k < f.lastOpen);
+  return keys.map(k => f.candles.get(k));
+}
+
+function onMsg(ev) {
+  const msg = JSON.parse(ev.data);
+  if (msg.error) { setStatus(false, 'Erè: ' + msg.error.message); return; }
+  if (msg.msg_type === 'candles') {
+    const sym = msg.echo_req.ticks_history, f = feeds[sym]; if (!f) return;
+    f.candles.clear();
+    msg.candles.forEach(c => f.candles.set(c.epoch, { high: +c.high, low: +c.low, close: +c.close }));
+    f.lastOpen = Math.max(...f.candles.keys());
+    const r = analyze(closedCandles(f));
+    if (r) { f.trend = r.trend; f.price = r.price; }
+    setStatus(true, 'Konekte · n ap tann siyal…');
+    drawPairs();
+  } else if (msg.msg_type === 'ohlc') {
+    const o = msg.ohlc, f = feeds[o.symbol]; if (!f) return;
+    const ot = +o.open_time;
+    f.candles.set(ot, { high: +o.high, low: +o.low, close: +o.close });
+    f.price = +o.close;
+    if (f.lastOpen !== undefined && ot > f.lastOpen) {
+      f.lastOpen = ot;
+      const r = analyze(closedCandles(f));
+      if (r) { f.trend = r.trend; if (r.signal) addSignal(o.symbol, r.signal, r.price); }
+    }
+    drawPairs();
+  }
+}
+
+function connect() {
+  ws = new WebSocket('wss://ws.derivws.com/websockets/v3?app_id=1089');
+  setStatus(false, 'N ap konekte…');
+  ws.onopen = () => {
+    for (const sym of selected) {
+      feeds[sym] = feeds[sym] || { candles: new Map() };
+      ws.send(JSON.stringify({ ticks_history: sym, adjust_start_time: 1, count: 300, end: 'latest',
+                               granularity: 60, style: 'candles', subscribe: 1 }));
+    }
+  };
+  ws.onmessage = onMsg;
+  ws.onclose = () => { if (running) { setStatus(false, 'Koneksyon koupe, n ap rekonekte…'); retry = setTimeout(connect, 3000); } };
+  ws.onerror = () => ws.close();
+}
+
+async function start() {
+  running = true;
+  $('go').textContent = '⏹ Kanpe'; $('go').classList.add('stop');
+  try { audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)(); audioCtx.resume(); } catch (e) {}
+  try { if (navigator.wakeLock) wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  connect();
+}
+function stop() {
+  running = false; clearTimeout(retry);
+  if (ws) ws.close();
+  if (wakeLock) { wakeLock.release(); wakeLock = null; }
+  $('go').textContent = '▶ Kòmanse'; $('go').classList.remove('stop');
+  setStatus(false, 'Kanpe');
+}
+$('go').onclick = () => running ? stop() : start();
+document.addEventListener('visibilitychange', async () => {
+  if (running && document.visibilityState === 'visible' && navigator.wakeLock) {
+    try { wakeLock = await navigator.wakeLock.request('screen'); } catch (e) {}
+  }
+});
+</script>
+</body>
+</html>
